@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
 """
-Z-Sploit - Modular Penetration Testing Framework
-Author: Zeeshan Ali
-Compatible with: Termux (Android) | Kali Linux
+Z-Sploit — Security Assessment & Audit Toolkit
+================================================
+A guided, menu-driven wrapper around standard security-scanning tools
+(Nmap, Nikto, Lynis, WhatWeb, Wget, Metasploit, Tor). It automates running
+and logging these tools and explains results in plain language — it does
+not implement any custom exploit or attack code of its own.
+
+Covers: network vulnerability scanning, web vulnerability scanning, local
+system auditing, IP/hosting reconnaissance, website mirroring, and scan
+history/logging — all from a single interactive menu.
+
+Author:     Zeeshan Ali
+Compatible: Termux (Android) | Kali Linux / Debian-based distros
+
+IMPORTANT: Only use this tool against systems you own or have explicit,
+written authorization to test. Unauthorized scanning is illegal in most
+jurisdictions.
 """
+
+ZSPLOIT_VERSION = "2.0.0"
 
 import os
 import sys
@@ -226,7 +242,12 @@ def check_tool(display_name, binary, install_fn):
     """
     Check if `binary` is on PATH.
     If found  → print confirmation and return True.
-    If absent → install via install_fn and return result.
+    If absent → install via install_fn, then MANDATORY re-check that the
+    binary actually ended up on PATH afterward — the installer's exit
+    code alone isn't trusted (it can report success even when the
+    binary didn't land somewhere PATH can see, e.g. wrong repo, partial
+    install, or a quirky package). Only a real post-install
+    shutil.which() hit counts as success.
     """
     print(f"\n{cyan('▶')} Checking {bold(display_name)} ...", end=" ", flush=True)
     pause(0.3)
@@ -234,15 +255,25 @@ def check_tool(display_name, binary, install_fn):
     if shutil.which(binary):
         print(green("✔  Already installed — OK"))
         return True
+
+    print(yellow("✘  Not found — installing ..."))
+    ret = install_fn()
+
+    # Mandatory re-check: don't trust the installer's exit code alone.
+    print(f"   {cyan('▶')} Re-checking {display_name} after install ...", end=" ", flush=True)
+    pause(0.3)
+    if ret == 0 and shutil.which(binary):
+        print(green(f"✔  {display_name} confirmed installed and on PATH."))
+        return True
+
+    print(red(f"✘  {display_name} still not found after install attempt."))
+    if ret != 0:
+        print(red(f"   (installer reported an error — exit status {ret})"))
     else:
-        print(yellow("✘  Not found — installing ..."))
-        ret = install_fn()
-        if ret == 0:
-            print(green(f"   ✔  {display_name} installed successfully."))
-            return True
-        else:
-            print(red(f"   ✘  Failed to install {display_name}. Check your connection/permissions."))
-            return False
+        print(red("   (installer reported success, but the binary isn't on PATH — "
+                   "may need a fresh shell/PATH refresh, or the package name is wrong)"))
+    print(red(f"   ✘  Failed to install {display_name}. Check your connection/permissions."))
+    return False
 
 # ── Individual install functions ───────────────
 
@@ -362,8 +393,42 @@ def bootstrap():
 # Clean, professional banner — the default look. The old ASCII-art/skull
 # banners below are kept and still available via Settings → Display mode
 # → "classic", for anyone who liked the original rotating-banner look.
-BANNER_PROFESSIONAL = r"""
+def _banner_professional() -> str:
+    """
+    Built as a function (not a static string) so it can show the
+    current ZSPLOIT_VERSION without the two ever drifting out of sync.
+    The border width is computed FROM the content width rather than
+    hand-typed, which previously caused a real bug: a manually-typed
+    Unicode border was 2 characters narrower than the content lines,
+    making the box visibly misaligned. Computing it guarantees they
+    can never mismatch again, however the content lines change.
+    """
+    inner_width = 56
+    lines = [
+        "",
+        "Z - S P L O I T".center(inner_width),
+        "Security Assessment & Audit Toolkit".center(inner_width),
+        f"v{ZSPLOIT_VERSION}".center(inner_width),
+        "",
+    ]
+    border = "═" * inner_width
+    rows = [f"╔{border}╗"]
+    rows += [f"║{line.ljust(inner_width)}║" for line in lines]
+    rows.append(f"╚{border}╝")
+    return "\n".join(rows) + "\n"
 
+BANNER_1 = r"""
+ ______     _____       _       _ _
+|___  /    / ____|     | |     (_) |
+   / / ___| (___  _ __ | | ___  _| |_
+  / / / __|\___ \| '_ \| |/ _ \| | __|
+ / /__\__ \____) | |_) | | (_) | | |_
+/_____|___/_____/| .__/|_|\___/|_|\__|
+                 | |
+                 |_|
+"""
+
+BANNER_2 = r"""
  ▒███████▒      ░██████  ██▓███   ██▓     ▒█████   ██▓▄▄▄█████▓
  ▒ ▒ ▒ ▄▀░    ▒██    ▒ ▓██░  ██▒▓██▒    ▒██▒  ██▒▓██▒▓  ██▒ ▓▒
  ░ ▒ ▄▀▒░     ░ ▓██▄   ▓██░ ██▓▒▒██░    ▒██░  ██▒▒██▒▒ ▓██░ ▒░
@@ -372,28 +437,15 @@ BANNER_PROFESSIONAL = r"""
  ░▒▒ ▓░▒░▒    ▒ ▒▓▒ ▒ ░▒▓▒░ ░  ░░ ▒░▓  ░░ ▒░▒░▒░ ░▓    ▒ ░░
 """
 
-BANNER_1 = r"""
- ______    _____        _       _ _
-|___  /   / ____|      | |     (_) |
-   / /    | (___  _ __ | | ___  _| |_
-  / /      \___ \| '_ \| |/ _ \| | __|
- / /__    \____) | |_) | | (_) | | |_
-/_____|   |_____/| .__/|_|\___/|_|\__|
-                 | |
-                 |_|
-"""
-
-BANNER_2 = r"""
-╔══════════════════════════════════════════════════════╗
-║                                                      ║
-║                   Z - S P L O I T                    ║
-║          Security Assessment & Audit Toolkit         ║
-║           use for educational purpose only           ║
-║                                                      ║
-╚══════════════════════════════════════════════════════╝
-"""
-
 BANNER_3 = r"""
+        .-'''-.
+       /  .-. .-\
+      |  (o ) (o )|
+       \   .---.  /
+        '-._____.-'
+       /   /|_|\   \
+      |   [     ]   |
+
  _____  _____ ____  __    ____  __________
 /__  / / ___// __ \/ /   / __ \/  _/_  __/
   / /  \__ \/ /_/ / /   / / / // /  / /
@@ -428,6 +480,14 @@ BANNER_5 = r"""
 """
 
 BANNER_6 = r"""
+        ___  ___
+       (o o) (o o)
+      ,-\__/-\__/-.
+     / /          \ \
+    | |  ZSPLOIT    | |
+     \ \          / /
+      '-.______.-'
+
  ______     ___________ _     _____ _____ _____
 |___  /    /  ___| ___ \ |   |  _  |_   _|_   _|
    / /_____\ `--.| |_/ / |   | | | | | |   | |
@@ -440,18 +500,14 @@ BANNER_6 = r"""
 
 # Heart-shaped banner spelling "ZF" inside it (Metasploit-style novelty banner)
 BANNER_HEART = r"""
-                  ⠀⠀⠀⠀⢀⣀⣤⣤⣤⣤⣄⡀⠀⠀⠀⠀
-                  ⠀⢀⣤⣾⣿⣾⣿⣿⣿⣿⣿⣿⣷⣄⠀⠀
-                  ⢠⣾⣿⢛⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⡀
-                  ⣾⣯⣷⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧
-                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
-                  ⣿⡿⠻⢿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠻⢿⡵
-                  ⣿⡇⠀⠀⠉⠛⠛⣿⣿⠛⠛⠉⠀⠀⣿⡇
-                  ⣿⣿⣀⠀⢀⣠⣴⡇⠹⣦⣄⡀⠀⣠⣿⡇
-                  ⠋⠻⠿⠿⣟⣿⣿⣦⣤⣼⣿⣿⠿⠿⠟⠀
-⠀                  ⠀⠀⠀⠸⡿⣿⣿⢿⡿⢿⠇⠀⠀⠀⠀
-⠀⠀                  ⠀⠀⠀⠀⠈⠁⠈⠁⠀⠀⠀⠀⠀⠀
-    {heartword} Z-Sploit  ·  by Zeeshan Ali {heartword}
+{heart}    ███████╗      ███████╗{heart}
+{heart}    ╚══███╔╝      ██╔════╝{heart}
+{heart}      ███╔╝       █████╗  {heart}
+{heart}     ███╔╝        ██╔══╝  {heart}
+{heart}    ███████╗      ██║     {heart}
+{heart}    ╚══════╝      ╚═╝     {heart}
+
+           {heartword} Z-Sploit  ·  by Zeeshan Ali {heartword}
 """
 
 def render_heart_banner():
@@ -483,7 +539,7 @@ def welcome():
         print(bold(white("Z-Sploit".center(width))))
         print(cyan("Zeeshan Ali".center(width)))
     else:
-        print(cyan(BANNER_PROFESSIONAL))
+        print(cyan(_banner_professional()))
 
     print()
     print("─" * width)
@@ -506,7 +562,7 @@ def welcome():
 # ─────────────────────────────────────────────
 #  Self-Update (git pull from Z-Sploit repo)
 # ─────────────────────────────────────────────
-ZSPLOIT_REPO_URL = "https://github.com/Zeeshan-78/ZSploit.git"
+ZSPLOIT_REPO_URL = "https://github.com/Zeeshan-Ali78/Z-Sploit.git"
 
 def get_script_dir():
     return os.path.dirname(os.path.abspath(__file__))
@@ -1174,9 +1230,21 @@ def run_vulnerability_scan(ip: str):
 
     # ── Parsed summary table: open ports found across all phases ──
     full_text = "".join(log_buffer)
-    port_lines = sorted(set(re.findall(
-        r"^(\d+/(?:tcp|udp)[ \t]+open[ \t]+\S+(?:[ \t]+.*)?)$", full_text, re.MULTILINE
-    )))
+    raw_matches = re.findall(
+        r"^(\d+/(?:tcp|udp))[ \t]+open[ \t]+(\S+(?:[ \t]+.*)?)$", full_text, re.MULTILINE
+    )
+    # The same port can appear in multiple phases with different levels of
+    # detail (e.g. "open https" from an early phase vs "open ssl/https
+    # github.com" once -sV finishes) — dedupe by port/protocol, keeping
+    # whichever line has the most detail (the longest one), rather than by
+    # exact line text, which previously let the same port show up twice.
+    best_by_port = {}
+    for port_proto, rest in raw_matches:
+        full_line = f"{port_proto} open  {rest}"
+        if port_proto not in best_by_port or len(rest) > len(best_by_port[port_proto][1]):
+            best_by_port[port_proto] = (full_line, rest)
+    port_lines = sorted((v[0] for v in best_by_port.values()),
+                         key=lambda line: int(line.split("/")[0]))
     print(white("\n    ── Open Ports Summary ──"))
     if port_lines:
         print(f"    {yellow('PORT/PROTO'.ljust(14))}{yellow('STATE'.ljust(8))}{yellow('SERVICE / VERSION')}")
@@ -1295,7 +1363,7 @@ def detect_site_languages(html: str, headers: dict) -> dict:
     findings = {"Backend / Language": [], "CMS / Platform": [], "Frontend": []}
 
     backend_signatures = [
-        ("PHP",               [".php", "phpsessid"]),
+        ("PHP",               [".php", "phpsessid", "x-powered-by:php"]),
         ("ASP.NET (.NET/C#)", ["__viewstate", ".aspx", "x-aspnet-version"]),
         ("Java (JSP/Servlet)",["jsessionid", ".jsp", ".do;"]),
         ("Ruby on Rails",     ["csrf-param", "authenticity_token", "_rails_session"]),
@@ -1308,7 +1376,7 @@ def detect_site_languages(html: str, headers: dict) -> dict:
             findings["Backend / Language"].append(lang)
 
     cms_signatures = [
-        ("WordPress", ["wp-content", "wp-includes", "wp-json"]),
+        ("WordPress", ["wp-content", "wp-includes", "wp-json", "wordpress"]),
         ("Drupal",    ["drupal.settings", "/sites/default/files", "x-generator:drupal"]),
         ("Joomla",    ["/media/jui/", "joomla"]),
         ("Magento",   ["mage.cookies", "/skin/frontend/", "x-magento"]),
@@ -1347,37 +1415,66 @@ def probe_common_paths(target: str) -> list:
     headers at all.
     """
     probes = [
+        # Only specific filenames/folder structures unique enough to a
+        # platform that a real hit is a strong signal. Generic guesses
+        # like "/administrator/", "/cgi-bin/", "/user/login" were removed
+        # after testing showed real sites (github.com) return 200 for
+        # them (likely deceptive/anti-scanning responses, or unrelated
+        # legacy routing) despite running none of these technologies —
+        # a false-positive risk no amount of baseline-checking fixes if
+        # the path itself is too common to begin with.
         ("/wp-login.php",        "WordPress"),
         ("/wp-json/",            "WordPress (REST API exposed)"),
         ("/xmlrpc.php",          "WordPress (XML-RPC exposed)"),
-        ("/administrator/",      "Joomla"),
-        ("/user/login",          "Drupal"),
         ("/sites/default/",      "Drupal"),
-        ("/cdn-cgi/",            "Cloudflare (proxy)"),
         ("/_next/static/",       "Next.js (React)"),
-        ("/cgi-bin/",            "CGI-based backend"),
     ]
+    def _probe_one(base: str, path: str):
+        """Returns (status_code, content_length) or (None, None) on error."""
+        try:
+            req = urllib.request.Request(
+                base + path,
+                headers={"User-Agent": "Mozilla/5.0 (Zsploit-Recon)"},
+                method="HEAD",
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                return resp.status, resp.headers.get("Content-Length")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Length") if e.headers else None
+        except Exception:
+            return None, None
+
     found = []
     for scheme in ("https", "http"):
         base = f"{scheme}://{target}"
-        reached = False
+
+        # Baseline: a guaranteed-nonexistent path. Many sites (GitHub
+        # included) return 200 or a redirect for EVERY path instead of a
+        # real 404 ("soft 404s"), which would otherwise false-positive
+        # every single probe below. If the site's "nothing here" response
+        # looks the same as a real page, we can't trust a bare status code.
+        baseline_path = f"/zsploit-recon-check-{random.randint(10**8, 10**9)}"
+        baseline_status, baseline_len = _probe_one(base, baseline_path)
+
+        reached = baseline_status is not None
         for path, label in probes:
-            try:
-                req = urllib.request.Request(
-                    base + path,
-                    headers={"User-Agent": "Mozilla/5.0 (Zsploit-Recon)"},
-                    method="HEAD",
-                )
-                with urllib.request.urlopen(req, timeout=4) as resp:
-                    reached = True
-                    if resp.status < 400:
-                        found.append(label)
-            except urllib.error.HTTPError as e:
-                reached = True
-                if e.code < 400:
-                    found.append(label)
-            except Exception:
+            status, length = _probe_one(base, path)
+            if status is None:
                 continue
+            reached = True
+            if status >= 400:
+                continue
+            # Only count this as a real signal if it's distinguishable
+            # from how the site responds to a path that can't possibly
+            # exist — different status code, or (same status) a
+            # meaningfully different response size.
+            if baseline_status is not None and status == baseline_status:
+                if length is not None and baseline_len is not None and length != baseline_len:
+                    found.append(label)
+                # same status AND same/unknown length → indistinguishable
+                # from the baseline, almost certainly a soft-404, skip it
+                continue
+            found.append(label)
         if reached:
             break
     return sorted(set(found))
@@ -1497,18 +1594,18 @@ def run_website_recon(target: str):
 
     # --- Consolidated Architecture Summary ---
     print(bold(cyan("\n    ══════ Website Architecture Summary ══════")))
-    print(f"    {yellow('Target'.ljust(18))}{white(target)}")
-    print(f"    {yellow('Hosted IP'.ljust(18))}{white(resolved_ip)}")
-    print(f"    {yellow('Hosting provider'.ljust(18))}{white(hosting_org or 'unknown')}")
-    print(f"    {yellow('Web server'.ljust(18))}{white(web_server)}")
+    print(f"    {yellow('Target'.ljust(22))}{white(target)}")
+    print(f"    {yellow('Hosted IP'.ljust(22))}{white(resolved_ip)}")
+    print(f"    {yellow('Hosting provider'.ljust(22))}{white(hosting_org or 'unknown')}")
+    print(f"    {yellow('Web server'.ljust(22))}{white(web_server)}")
 
     backend_list = sorted(set(site_langs.get("Backend / Language", []) + guess))
     cms_list = sorted(set(site_langs.get("CMS / Platform", [])))
     frontend_list = sorted(set(site_langs.get("Frontend", [])))
 
-    print(f"    {yellow('Backend language(s)'.ljust(18))}{white(', '.join(backend_list) or 'not detected')}")
-    print(f"    {yellow('CMS / Platform'.ljust(18))}{white(', '.join(cms_list) or 'not detected')}")
-    print(f"    {yellow('Frontend tech'.ljust(18))}{white(', '.join(frontend_list) or 'not detected')}")
+    print(f"    {yellow('Backend language(s)'.ljust(22))}{white(', '.join(backend_list) or 'not detected')}")
+    print(f"    {yellow('CMS / Platform'.ljust(22))}{white(', '.join(cms_list) or 'not detected')}")
+    print(f"    {yellow('Frontend tech'.ljust(22))}{white(', '.join(frontend_list) or 'not detected')}")
 
     if not (backend_list or cms_list or frontend_list):
         print(yellow(
@@ -1847,10 +1944,20 @@ def launch_metasploit(ip: str):
     print(bold(cyan(f"\n[*] Launching Metasploit against {ip} ...")))
     print(yellow("    Type 'exit' inside msfconsole to return to Z-Sploit.\n"))
     pause(1)
+
+    # Apply the same Termux/root-awareness used for every other nmap call
+    # in this script: -O needs raw sockets (unavailable on Termux even as
+    # root), and without the route-workaround flags, db_nmap here would
+    # hit the identical 'failed to determine route' failure fixed elsewhere.
+    is_root = (hasattr(os, "geteuid") and os.geteuid() == 0)
+    has_raw_sockets = is_root and ENV != "termux"
+    route_flags = nmap_route_workaround_flags()
+    db_nmap_flags = f"-sV -O {route_flags}" if has_raw_sockets else f"-sT -sV {route_flags}"
+
     rc_script = f"/tmp/zsploit_msf_{ip.replace('.','_')}.rc"
     with open(rc_script, "w") as f:
         f.write(f"setg RHOSTS {ip}\n")
-        f.write("db_nmap -sV -O " + ip + "\n")
+        f.write(f"db_nmap {db_nmap_flags} {ip}\n")
         f.write("vulns\n")
     os.system(f"msfconsole -r {rc_script}")
     try:
@@ -1919,9 +2026,12 @@ def main():
     # Step 0 — apply the saved color theme before anything else prints
     apply_theme(load_config().get("theme", "classic"))
 
-    # --help / -h command line flag
+    # --help / -h and --version command line flags
     if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
         show_help()
+        sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
+        print(f"Z-Sploit v{ZSPLOIT_VERSION}")
         sys.exit(0)
 
     # Step 1 — dependency checks
@@ -1948,8 +2058,8 @@ def main():
 
             print()
             print(bold(green("╔══════════════════════════════════════╗")))
-            print(bold(green("║       Z-Sploit session complete      ║")))
-            print(bold(green("║         tool by Zeeshan Ali ©        ║")))
+            print(bold(green("║   Z-Sploit session complete. Stay    ║")))
+            print(bold(green("║        Ethical. Zeeshan Ali ©        ║")))
             print(bold(green("╚══════════════════════════════════════╝")))
             print()
             sys.exit(0)
