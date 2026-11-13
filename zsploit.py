@@ -1942,22 +1942,36 @@ def launch_metasploit(ip: str):
         print(red("[!] Metasploit (msfconsole) not found — skipping."))
         return
     print(bold(cyan(f"\n[*] Launching Metasploit against {ip} ...")))
+
+    # Try to get Metasploit's database connected so 'vulns' and other
+    # DB-backed features work. Best-effort: if this fails, we still
+    # guarantee a real scan below regardless of DB status.
+    if shutil.which("msfdb"):
+        print(yellow("[*] Initializing Metasploit database (one-time setup if needed) ..."))
+        os.system("msfdb init >/dev/null 2>&1")
+
     print(yellow("    Type 'exit' inside msfconsole to return to Z-Sploit.\n"))
     pause(1)
 
     # Apply the same Termux/root-awareness used for every other nmap call
     # in this script: -O needs raw sockets (unavailable on Termux even as
-    # root), and without the route-workaround flags, db_nmap here would
-    # hit the identical 'failed to determine route' failure fixed elsewhere.
+    # root), and without the route-workaround flags, this would hit the
+    # identical 'failed to determine route' failure fixed elsewhere.
     is_root = (hasattr(os, "geteuid") and os.geteuid() == 0)
     has_raw_sockets = is_root and ENV != "termux"
     route_flags = nmap_route_workaround_flags()
-    db_nmap_flags = f"-sV -O {route_flags}" if has_raw_sockets else f"-sT -sV {route_flags}"
+    nmap_flags = f"-sV -O {route_flags}".strip() if has_raw_sockets else f"-sT -sV {route_flags}".strip()
 
     rc_script = f"/tmp/zsploit_msf_{ip.replace('.','_')}.rc"
     with open(rc_script, "w") as f:
         f.write(f"setg RHOSTS {ip}\n")
-        f.write(f"db_nmap {db_nmap_flags} {ip}\n")
+        f.write("db_status\n")
+        # IMPORTANT: plain 'nmap', not 'db_nmap'. db_nmap silently does
+        # NOTHING if the database isn't connected (just prints
+        # "Database not connected" and skips the actual scan) — using
+        # plain nmap here means a real scan always happens regardless
+        # of whether the DB setup above succeeded.
+        f.write(f"nmap {nmap_flags} {ip}\n")
         f.write("vulns\n")
     os.system(f"msfconsole -r {rc_script}")
     try:
@@ -1969,35 +1983,57 @@ def launch_metasploit(ip: str):
 #  Main Flow
 # ─────────────────────────────────────────────
 def get_ip() -> str:
+    last_target = load_config().get("last_target", "")
+    prompt = (
+        f"\n[?] Enter target IP address or hostname [{last_target}]: "
+        if last_target else
+        "\n[?] Enter target IP address or hostname: "
+    )
     while True:
-        ip = input(bold("\n[?] Enter target IP address or hostname: ")).strip()
+        ip = input(bold(prompt)).strip()
         if ip.lower() == "help":
             show_help()
             continue
+        if not ip and last_target:
+            # Pressing Enter reuses the last target — this is the actual
+            # point of saving last_target; previously it was written to
+            # config but never read back anywhere, making it pointless.
+            return last_target
         if ip and validate_ip(ip):
             return ip
         print(red("    Invalid IP / hostname. Please try again."))
 
 
+MENU_ITEMS = [
+    ("1",  "Network Vulnerability Scan", "Nmap — multi-technique"),
+    ("2",  "Web Vulnerability Scan",     "Nikto + Nmap HTTP scripts"),
+    ("3",  "System Vulnerability Scan",  "Lynis — local host only"),
+    ("4",  "IP Trace",                   "WHOIS + Traceroute + rDNS"),
+    ("5",  "Full Remote Audit",          "1 + 2 + 4 + Metasploit"),
+    ("6",  "Website Recon",              "Tech stack + Hosting profile"),
+    ("7",  "Website Copy",               "Full mirror → own folder + info.txt"),
+    ("8",  "Scan History",               "Review past scans & logs"),
+    ("9",  "Settings",                   "Nmap timing, auto-logging, theme"),
+    ("10", "Help",                       None),
+    ("11", "Update",                     "git pull from GitHub"),
+    ("12", "Exit",                       None),
+]
+
+
 def print_menu():
     print(bold(cyan("\n[?] Select an action:")))
-    print(f"    {white('1')}  Network Vulnerability Scan  (Nmap — multi-technique)")
-    print(f"    {white('2')}  Web Vulnerability Scan      (Nikto + Nmap HTTP scripts)")
-    print(f"    {white('3')}  System Vulnerability Scan   (Lynis — local host only)")
-    print(f"    {white('4')}  IP Trace                    (WHOIS + Traceroute + rDNS)")
-    print(f"    {white('5')}  Full Remote Audit           (1 + 2 + 4 + Metasploit)")
-    print(f"    {white('6')}  Website Recon               (Tech stack + Hosting profile)")
-    print(f"    {white('7')}  Website Copy                (Full mirror → own folder + info.txt)")
-    print(f"    {white('8')}  Scan History                 (Review past scans & logs)")
-    print(f"    {white('9')}  Settings                     (Nmap timing, auto-logging)")
-    print(f"    {white('10')} Help")
-    print(f"    {white('11')} Update                      (git pull from GitHub)")
-    print(f"    {white('12')} Exit")
+    num_width = max(len(n) for n, _, _ in MENU_ITEMS)
+    label_width = max(len(label) for _, label, _ in MENU_ITEMS) + 2
+    for num, label, desc in MENU_ITEMS:
+        line = f"    {white(num.rjust(num_width))}  {label}"
+        if desc:
+            line += " " * (label_width - len(label)) + f"({desc})"
+        print(line)
 
 
 def choose_action() -> str:
     print_menu()
-    valid = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12")
+    valid = tuple(num for num, _, _ in MENU_ITEMS)
     while True:
         choice = input(bold("\n    Your choice [1-12]: ")).strip().lower()
         if choice == "help":
