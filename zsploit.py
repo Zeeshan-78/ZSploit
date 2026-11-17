@@ -73,23 +73,60 @@ def save_config(cfg: dict):
         print(f"[!] Could not save config: {e}")
 
 
-def run_cmd(cmd: str, buffer: list = None) -> int:
+def run_cmd(cmd: str, buffer: list = None, timeout: float = None) -> int:
     """
     Run an external command, printing its output live (same visible
     behavior as os.system) while also capturing every line into
     `buffer` (if given) so it can be written to a scan log afterward.
-    Returns the process's exit code.
+    Returns the process's exit code (or 124, matching the standard
+    'timeout' command's convention, if the process was killed for
+    running past `timeout` seconds).
+
+    `timeout` is a safety net for commands that can have no natural
+    end on some real-world inputs — e.g. mirroring a site with
+    combinatorial/faceted-search links (confirmed in testing: some
+    sites generate effectively unlimited crawlable URLs) could
+    otherwise run indefinitely despite wget's own per-request timeout.
     """
+    import threading
+    import signal
     try:
         proc = subprocess.Popen(
             cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1
+            text=True, bufsize=1,
+            # Needed so the WHOLE process group (the shell AND whatever
+            # it spawns, e.g. wget) can be killed together on timeout —
+            # proc.kill() alone only kills the shell wrapper, leaving
+            # real commands like wget running orphaned in the background.
+            start_new_session=True,
         )
+        timed_out = {"flag": False}
+        timer = None
+        if timeout:
+            def _kill():
+                timed_out["flag"] = True
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # already exited on its own
+            timer = threading.Timer(timeout, _kill)
+            timer.daemon = True
+            timer.start()
+
         for line in proc.stdout:
             print(line, end="")
             if buffer is not None:
                 buffer.append(line)
         proc.wait()
+
+        if timer:
+            timer.cancel()
+        if timed_out["flag"]:
+            msg = f"[!] Command exceeded {timeout}s and was stopped.\n"
+            print(msg, end="")
+            if buffer is not None:
+                buffer.append(msg)
+            return 124
         return proc.returncode
     except Exception as e:
         msg = f"[!] Command failed to run: {e}\n"
@@ -250,7 +287,12 @@ def check_tool(display_name, binary, install_fn):
     shutil.which() hit counts as success.
     """
     print(f"\n{cyan('▶')} Checking {bold(display_name)} ...", end=" ", flush=True)
-    pause(0.3)
+    # Shorter pause here: shutil.which() below is instant (just a PATH
+    # lookup), and this runs on EVERY startup for EVERY tool — the old
+    # 0.3s added up to 2.4+ seconds of pure sleep across 8 tools on every
+    # single launch for no functional reason, once everything's already
+    # installed (the common case after first setup).
+    pause(0.08)
 
     if shutil.which(binary):
         print(green("✔  Already installed — OK"))
@@ -562,22 +604,42 @@ def welcome():
 # ─────────────────────────────────────────────
 #  Self-Update (git pull from Z-Sploit repo)
 # ─────────────────────────────────────────────
-ZSPLOIT_REPO_URL = "https://github.com/Zeeshan-Ali78/Z-Sploit.git"
+ZSPLOIT_REPO_URL = "https://github.com/Zeeshan-78/ZSploit.git"
 
 def get_script_dir():
     return os.path.dirname(os.path.abspath(__file__))
+
+UPDATE_CHECK_CACHE_PATH = os.path.join(LOG_DIR, "update_check_cache.json")
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60  # once per day
+
 
 def check_for_updates():
     """
     Check if the local copy is inside a git repo tied to the Z-Sploit
     GitHub repo. If so, fetch + report whether updates are available.
-    Returns True if updates are available, False otherwise (or on error).
+    Returns True if updates are available, False otherwise (or None if
+    not a git checkout / on error).
+
+    Cached for 24 hours: a 'git fetch' can take up to 30 seconds on a
+    slow connection, and re-running it on every single startup (every
+    launch of the script) made the welcome screen wait on the network
+    every time even though the answer rarely changes within a day.
+    Within the cache window, this returns instantly with no network call.
     """
     repo_dir = get_script_dir()
     git_dir = os.path.join(repo_dir, ".git")
-
     if not os.path.isdir(git_dir):
         return None  # not a git checkout
+
+    now = time.time()
+    try:
+        if os.path.exists(UPDATE_CHECK_CACHE_PATH):
+            with open(UPDATE_CHECK_CACHE_PATH, "r") as f:
+                cache = json.load(f)
+            if now - cache.get("checked_at", 0) < UPDATE_CHECK_INTERVAL_SECONDS:
+                return cache.get("update_available")
+    except (json.JSONDecodeError, OSError):
+        pass  # corrupt/unreadable cache — fall through and re-check for real
 
     try:
         subprocess.run(
@@ -592,9 +654,18 @@ def check_for_updates():
             ["git", "-C", repo_dir, "rev-parse", "@{u}"],
             check=True, capture_output=True, text=True
         ).stdout.strip()
-        return local != remote
+        result = local != remote
     except Exception:
-        return None
+        result = None
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(UPDATE_CHECK_CACHE_PATH, "w") as f:
+            json.dump({"checked_at": now, "update_available": result}, f)
+    except OSError:
+        pass  # caching failure shouldn't block the actual result
+
+    return result
 
 
 def show_scan_history():
@@ -740,8 +811,20 @@ def run_update():
                 if result.returncode == 0:
                     print(green(f"[✔] Cloned latest Z-Sploit into: {dest}"))
                 else:
-                    print(red("[!] Clone failed:"))
-                    print(red(result.stderr.strip()))
+                    stderr = result.stderr.strip()
+                    if "could not read Username" in stderr or "not found" in stderr.lower():
+                        print(red(
+                            f"[!] The repository URL doesn't seem to exist or isn't "
+                            f"public: {ZSPLOIT_REPO_URL}"
+                        ))
+                        print(yellow(
+                            "    This URL is configured in the script itself "
+                            "(ZSPLOIT_REPO_URL) — if you have the correct repo "
+                            "link, edit that line near the top of zsploit.py."
+                        ))
+                    else:
+                        print(red("[!] Clone failed:"))
+                        print(red(stderr))
             except FileNotFoundError:
                 print(red("[!] 'git' is not installed. Install it first (e.g. 'apt install git' or 'pkg install git')."))
             except subprocess.TimeoutExpired:
@@ -781,19 +864,22 @@ def show_help():
   touches a remote target.
 
 {bold('MAIN MENU OPTIONS')}
-  1  Network Vulnerability  Runs Nmap through several
-     Scan                   techniques: a combined top-1000
-                           port + version (-sV) + default
-                           script (-sC) scan, a full port
-                           range scan (-p-), a UDP top-ports
-                           scan, and OS detection (-O, if
-                           capable). On Termux/Android, SYN
-                           scan and OS detection are
-                           automatically skipped in favor of
-                           TCP Connect (-sT) — raw sockets
-                           are blocked by the OS there even
-                           as root, so this avoids silent
-                           failures.
+  1  Network Vulnerability  Runs Nmap in stages, efficiently:
+     Scan                   first a full port-range scan
+                           (-p-, all 65535 ports) to find
+                           every open port, then version
+                           (-sV) + default script (-sC)
+                           detection targeted only at the
+                           ports actually found open (no
+                           port gets scanned twice), plus a
+                           UDP top-ports scan and OS
+                           detection (-O, if capable). On
+                           Termux/Android, SYN scan and OS
+                           detection are automatically
+                           skipped in favor of TCP Connect
+                           (-sT) — raw sockets are blocked by
+                           the OS there even as root, so this
+                           avoids silent failures.
   2  Web Vulnerability      Runs Nikto + Nmap HTTP NSE
      Scan                   scripts against the target's
                            web server(s).
@@ -1200,33 +1286,49 @@ def run_vulnerability_scan(ip: str):
     # extremely slow target doesn't hang indefinitely either.
     live_flags = "-v --stats-every 10s --host-timeout 5m"
 
-    phases = [
-        # Combined into one nmap run (instead of 3 separate ones) so
-        # host discovery only happens once — much faster, same coverage.
-        (f"{port_scan_name} scan + version + scripts (top 1000 ports)",
-         f"nmap {port_scan_flag} -sV -sC --open -{timing} {live_flags} {route_flags} {ip}"),
+    log_buffer = []
 
-        ("Full port range scan (-p-) — catches non-standard ports",
-         f"nmap {port_scan_flag} -p- --open -{timing} {live_flags} {route_flags} {ip}"),
+    # Step 1: find every open port across the FULL range in one pass
+    # (fast — no service/version probing yet).
+    label = f"{port_scan_name} full port range scan (-p-)"
+    cmd = f"nmap {port_scan_flag} -p- --open -{timing} {live_flags} {route_flags} {ip}"
+    print(yellow(f"\n[Nmap] {label} ..."))
+    log_buffer.append(f"\n=== {label} ===\n$ {cmd}\n")
+    run_cmd(cmd, log_buffer)
 
-        ("UDP scan, top 20 ports (-sU) — slower, often filtered",
-         f"nmap -sU --top-ports 20 --open -{timing} {live_flags} {route_flags} {ip}"),
-    ]
+    # Step 2: run -sV -sC ONLY against the ports just found open, instead
+    # of separately re-scanning the top-1000 (which would re-check every
+    # common port — 80, 443, 22, etc. — a second time for no reason, since
+    # the full-range scan above already covers that exact range).
+    discovered_ports = sorted(set(int(m) for m in re.findall(
+        r"^(\d+)/tcp[ \t]+open[ \t]+", "".join(log_buffer), re.MULTILINE
+    )))
+    if discovered_ports:
+        port_list = ",".join(str(p) for p in discovered_ports)
+        label = f"Service & script detection on {len(discovered_ports)} open port(s)"
+        cmd = f"nmap -sV -sC -p {port_list} --open -{timing} {live_flags} {route_flags} {ip}"
+        print(yellow(f"\n[Nmap] {label} ..."))
+        log_buffer.append(f"\n=== {label} ===\n$ {cmd}\n")
+        run_cmd(cmd, log_buffer)
+    else:
+        print(yellow("\n[Nmap] No open TCP ports found — skipping service/version detection."))
+
+    label = "UDP scan, top 20 ports (-sU) — slower, often filtered"
+    cmd = f"nmap -sU --top-ports 20 --open -{timing} {live_flags} {route_flags} {ip}"
+    print(yellow(f"\n[Nmap] {label} ..."))
+    log_buffer.append(f"\n=== {label} ===\n$ {cmd}\n")
+    run_cmd(cmd, log_buffer)
+
     if has_root:
-        phases.append((
-            "OS detection (-O)",
-            f"nmap -O {live_flags} {ip}"
-        ))
+        label = "OS detection (-O)"
+        cmd = f"nmap -O {live_flags} {ip}"
+        print(yellow(f"\n[Nmap] {label} ..."))
+        log_buffer.append(f"\n=== {label} ===\n$ {cmd}\n")
+        run_cmd(cmd, log_buffer)
     elif ENV == "termux":
         print(yellow("[!] Skipping OS detection (-O) — blocked on Termux/Android regardless of root."))
     else:
         print(yellow("[!] Skipping OS detection (-O) — requires root."))
-
-    log_buffer = []
-    for label, cmd in phases:
-        print(yellow(f"\n[Nmap] {label} ..."))
-        log_buffer.append(f"\n=== {label} ===\n$ {cmd}\n")
-        run_cmd(cmd, log_buffer)
 
     # ── Parsed summary table: open ports found across all phases ──
     full_text = "".join(log_buffer)
@@ -1666,16 +1768,23 @@ def run_website_copy(target: str):
 
     print(yellow("\n[Wget] Mirroring site (pages, CSS, JS, images) ..."))
     log_buffer = [f"=== Website Copy: {target} ===\n"]
+    # --level caps recursion depth and --quota caps total download size —
+    # both needed because some real sites (confirmed via testing: pypi.org's
+    # search-filter combinations) generate effectively unlimited crawlable
+    # URLs, which --no-parent alone does nothing to stop. The 10-minute
+    # run_cmd timeout is a final backstop in case even that isn't enough.
     wget_cmd = (
         f"wget --mirror --convert-links --adjust-extension "
-        f"--page-requisites --no-parent --tries=2 --timeout=15 "
+        f"--page-requisites --no-parent --level=3 --quota=200m "
+        f"--tries=2 --timeout=15 "
         f"-e robots=on -P {base_dir} https://{target}"
     )
-    ret = run_cmd(wget_cmd, log_buffer)
-    if ret != 0:
+    print(yellow("    (capped at 3 levels deep / 200 MB / 10 minutes, to stay safe on any site)"))
+    ret = run_cmd(wget_cmd, log_buffer, timeout=600)
+    if ret not in (0, 124):  # 124 = our own timeout; don't retry that case over HTTP too
         print(yellow("[!] HTTPS mirror had issues, retrying with HTTP ..."))
         wget_cmd_http = wget_cmd.replace("https://", "http://")
-        run_cmd(wget_cmd_http, log_buffer)
+        run_cmd(wget_cmd_http, log_buffer, timeout=600)
 
     # ── Summarize what got copied ──────────────────
     file_count = 0
